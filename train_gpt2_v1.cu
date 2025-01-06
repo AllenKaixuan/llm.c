@@ -678,31 +678,24 @@ __global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
     }
 }
 
-// void gelu_forward(float* out, float* inp, int B, int T, int C) {
-//     int N = B * T * 4*C;
-//     float* d_out;
-//     float* d_inp;
-//     cudaCheck(cudaMalloc(&d_out, B * T * C * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_inp, B * T * C * sizeof(float)));
-//     cudaCheck(cudaMemcpy(d_inp, inp, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
-//     cudaCheck(cudaMemcpy(d_out, out, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
-//     int block_size = 64;
-//     int num_blocks = (N + block_size - 1) / block_size;
-//     gelu_forward_kernel<<<num_blocks, block_size>>>(d_out, d_inp, N);
-//     cudaCheck(cudaMemcpy(out, d_out, B * T * C * sizeof(float), cudaMemcpyDeviceToHost));
-//     cudaCheck(cudaFree(d_out));
-//     cudaCheck(cudaFree(d_inp));
-
-// }
-void gelu_forward(float* out, float* inp, int B, int T, int C) {
-    // (approximate) GeLU elementwise non-linearity in the MLP block of Transformer
-    int N = B * T * C*4;
-    for (int i = 0; i < N; i++) {
-        float x = inp[i];
-        float cube = 0.044715f * x * x * x;
-        out[i] = 0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube)));
-    }
+void gelu_forward(float* out, const float* inp, int B, int T, int C) {
+    int N = B * T * C * 4;
+    float* d_out;
+    float* d_inp;
+    cudaCheck(cudaMalloc(&d_out, N * sizeof(float)));
+    cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
+    cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
+    
+    int block_size = 256;
+    int num_blocks = (N + block_size - 1) / block_size;
+    gelu_forward_kernel<<<num_blocks, block_size>>>(d_out, d_inp, N);
+    cudaCheck(cudaGetLastError());
+    cudaCheck(cudaDeviceSynchronize());
+    cudaCheck(cudaMemcpy(out, d_out, N * sizeof(float), cudaMemcpyDeviceToHost));
+    cudaCheck(cudaFree(d_out));
+    cudaCheck(cudaFree(d_inp));
 }
+
 
 
 
