@@ -678,8 +678,8 @@ __global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
     }
 }
 
-void gelu_forward(float* out, const float* inp, int B, int T, int C) {
-    int N = B * T * C * 4;
+void gelu_forward(float* out, const float* inp, int N) {
+    
     float* d_out;
     float* d_inp;
     cudaCheck(cudaMalloc(&d_out, N * sizeof(float)));
@@ -704,17 +704,42 @@ void gelu_forward(float* out, const float* inp, int B, int T, int C) {
 #if defined(__GNUC__) && !defined(__clang__)
 __attribute__((optimize("no-finite-math-only")))
 #endif
-void gelu_backward(float* dinp, float* inp, float* dout, int N) {
-    for (int i = 0; i < N; i++) {
-        float x = inp[i];
+__global__ void gelu_backward_kernel(float* dinp, const float* inp, const float* dout, int N) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        float x = inp[idx];
         float cube = 0.044715f * x * x * x;
         float tanh_arg = GELU_SCALING_FACTOR * (x + cube);
         float tanh_out = tanhf(tanh_arg);
         float coshf_out = coshf(tanh_arg);
         float sech_out = 1.0f / (coshf_out * coshf_out);
         float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
-        dinp[i] += local_grad * dout[i];
+        dinp[idx] = local_grad * dout[idx];
     }
+}
+
+void gelu_backward(float* dinp, const float* inp, const float* dout, int N) {
+    float* d_dinp;
+    float* d_inp;
+    float* d_dout;
+    cudaCheck(cudaMalloc(&d_dinp, N * sizeof(float)));
+    cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
+    cudaCheck(cudaMalloc(&d_dout, N * sizeof(float)));
+
+    cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
+    cudaCheck(cudaMemcpy(d_dout, dout, N * sizeof(float), cudaMemcpyHostToDevice));
+
+    int block_size = 256;
+    int num_blocks = (N + block_size - 1) / block_size;
+    gelu_backward_kernel<<<num_blocks, block_size>>>(d_dinp, d_inp, d_dout, N);
+    cudaCheck(cudaGetLastError());
+    cudaCheck(cudaDeviceSynchronize());
+
+    cudaCheck(cudaMemcpy(dinp, d_dinp, N * sizeof(float), cudaMemcpyDeviceToHost));
+
+    cudaCheck(cudaFree(d_dinp));
+    cudaCheck(cudaFree(d_inp));
+    cudaCheck(cudaFree(d_dout));
 }
 #pragma float_control(pop)
 
@@ -1153,7 +1178,7 @@ void gpt2_forward(GPT2 *model, int* inputs, int* targets, size_t B, size_t T) {
         residual_forward(l_residual2, residual, l_attproj, B*T*C);
         layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C);
         matmul_forward(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, 4*C);
-        gelu_forward(l_fch_gelu, l_fch,  B, T, C);
+        gelu_forward(l_fch_gelu, l_fch, B*T*4*C);
         matmul_forward(l_fcproj, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C);
         residual_forward(l_residual3, l_residual2, l_fcproj, B*T*C);
     }
