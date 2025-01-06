@@ -73,6 +73,22 @@ __device__ inline float4 add_float4(const float4& a, const float4& b) {
 
 // use of float4 leads to using 128-bit LDG / STG instructions in SASS,
 // very helpful in memory-bound kernels like encoder_forward
+__global__ void encoder_forward_kernel2(float *out, const int *inp, const float *wte, const float *wpe, int B, int T,
+                                        int C) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * T * (C / 4))
+        return;
+    int b = idx / (T * (C / 4));
+    int t = (idx / (C / 4)) % T;
+    int i = idx % (C / 4);
+    int ix = inp[b * T + t];
+
+    float4 *out_bt = reinterpret_cast<float4 *>(out + b * T * C + t * C) + i;
+    const float4 *wte_ix = reinterpret_cast<const float4 *>(wte + ix * C) + i;
+    const float4 *wpe_t = reinterpret_cast<const float4 *>(wpe + t * C) + i;
+    out_bt[0] = make_float4(wte_ix->x + wpe_t->x, wte_ix->y + wpe_t->y, wte_ix->z + wpe_t->z, wte_ix->w + wpe_t->w);
+}
+
 __global__ void encoder_forward_kernel3(float4* out,
                                const int* inp, const float4* wte, const float4* wpe,
                                int B, int T, int C) {
@@ -110,6 +126,60 @@ __global__ void encoder_backward_kernel(float* dwte, float* dwpe,
 
         atomicAdd(dwte_ix, *dout_btc);
         atomicAdd(dwpe_tc, *dout_btc);
+    }
+}
+
+__global__ void layernorm_forward_kernel2(float *out, float *mean, float *rstd, float *inp, float *weight, float *bias,
+                                          int B, int T, int C) {
+    namespace cg = cooperative_groups;
+    cg::thread_block_tile<32> wrap = cg::tiled_partition<32>(cg::this_thread_block());
+    int idx = blockIdx.x;
+    if (idx >= B * T)
+        return;
+    __shared__ float smdata[32];
+    __shared__ float sm2data[32];
+    float m = 0.0f;
+    float m2 = 0.0f;
+    float xtemp = 0.0f;
+    float *x = inp + idx * C;
+    // Load data into shared memory
+    for (int i = threadIdx.x; i < C; i += blockDim.x) {
+        xtemp = x[i];
+        m += xtemp;
+        m2 += xtemp * xtemp;
+    }
+
+    // Reduce within the wrap
+    float wrap_smdata = cg::reduce(wrap, m, cg::plus<float>());
+    float wrap_sm2data = cg::reduce(wrap, m2, cg::plus<float>());
+    smdata[wrap.meta_group_rank()] = wrap_smdata;
+    sm2data[wrap.meta_group_rank()] = wrap_sm2data;
+    __syncthreads();
+    // Reduce within the block
+    wrap_smdata = (wrap.thread_rank() < wrap.meta_group_size()) ? smdata[wrap.thread_rank()] : 0.0f;
+    wrap_sm2data = (wrap.thread_rank() < wrap.meta_group_size()) ? sm2data[wrap.thread_rank()] : 0.0f;
+    float block_smdata = cg::reduce(wrap, wrap_smdata, cg::plus<float>());
+    float block_sm2data = cg::reduce(wrap, wrap_sm2data, cg::plus<float>());
+    if (wrap.thread_rank() < wrap.meta_group_size()) {
+        smdata[wrap.thread_rank()] = wrap_smdata;
+        sm2data[wrap.thread_rank()] = wrap_sm2data;
+    }
+    __syncthreads();
+    float ma = block_smdata / C;
+    float v = block_sm2data / C - ma * ma;
+    float s = rsqrtf(v + 1e-5f);
+
+    if (threadIdx.x == 0) {
+        mean[idx] = ma;
+        rstd[idx] = s;
+    }
+
+    // Normalize and scale
+    float *out_bt = out + idx * C;
+    for (int i = threadIdx.x; i < C; i += blockDim.x) {
+        float x = inp[idx * C + i];
+        float n = (x - ma) * s;
+        out_bt[i] = n * weight[i] + bias[i];
     }
 }
 
@@ -367,6 +437,55 @@ __global__ void matmul_backward_bias_kernel4(float* dbias, const float* dout, in
             dout_sum += smem[lane_id + j * warpSize];
         }
         dbias[tl + lane_id] += dout_sum;
+    }
+}
+
+__global__ void layernorm_backward_kernel1(float *dinp, float *dweight, float *dbias, const float *dout,
+                                           const float *inp, const float *weight, const float *mean, const float *rstd,
+                                           int B, int T, int C) {
+    namespace cg = cooperative_groups;
+    cg::thread_block_tile<32> wrap = cg::tiled_partition<32>(cg::this_thread_block());
+    int idx = blockIdx.x * wrap.meta_group_size() + wrap.meta_group_rank();
+    if (idx >= B * T)
+        return;
+
+    const float *dout_bt = dout + idx * C;
+    const float *inp_bt = inp + idx * C;
+    float *dinp_bt = dinp + idx * C;
+    const float mean_bt = mean[idx];
+    const float rstd_bt = rstd[idx];
+
+    float dnorm_mean = 0.0f;
+    float dnorm_norm_mean = 0.0f;
+
+    for (int i = wrap.thread_rank(); i < C; i += wrap.size()) {
+        float norm_bti = (inp_bt[i] - mean_bt) * rstd_bt;
+        float dnorm_i = weight[i] * dout_bt[i];
+        dnorm_mean += dnorm_i;
+        dnorm_norm_mean += dnorm_i * norm_bti;
+    }
+    dnorm_mean = cg::reduce(wrap, dnorm_mean, cg::plus<float>());
+    dnorm_norm_mean = cg::reduce(wrap, dnorm_norm_mean, cg::plus<float>());
+
+    dnorm_mean = dnorm_mean / C;
+    dnorm_norm_mean = dnorm_norm_mean / C;
+
+    // now iterate again and accumulate all the gradients
+    for (int i = wrap.thread_rank(); i < C; i += wrap.size()) {
+        float dout_bti = dout_bt[i];
+        float norm_bti = (inp_bt[i] - mean_bt) * rstd_bt;
+        float dnorm_i = weight[i] * dout_bti;
+        // accumulate the gradient of the bias
+        atomicAdd(&dbias[i], dout_bti);
+        // accumulate the gradient of the weight
+        atomicAdd(&dweight[i], norm_bti * dout_bti);
+        // compute the gradient of the input
+        float dval = 0.0f;
+        dval += dnorm_i;                    // term 1
+        dval -= dnorm_mean;                 // term 2
+        dval -= norm_bti * dnorm_norm_mean; // term 3
+        dval *= rstd_bt;                    // final scale
+        dinp_bt[i] += dval;
     }
 }
 
@@ -696,8 +815,8 @@ void encoder_forward(float* out,
     assert(C % 4 == 0);
     const int block_size = 512;
     const int N = B * T * C;
-    const int grid_size = CEIL_DIV(N / 4, block_size);
-    encoder_forward_kernel3<<<grid_size, block_size>>>((float4*) out, inp, (float4*) wte, (float4*) wpe, B, T, C);
+    const int grid_size = CEIL_DIV(N, block_size);
+    encoder_forward_kernel2<<<grid_size, block_size>>>(out, inp, wte, wpe, B, T, C);
     cudaCheck(cudaGetLastError());
 }
 
@@ -716,8 +835,8 @@ void layernorm_forward(float* out, float* mean, float* rstd,
                        int B, int T, int C) {
     const int block_size = 512;
     const int N = B * T;
-    const int grid_size = CEIL_DIV(N * 32, block_size);
-    layernorm_forward_kernel3<<<grid_size, block_size>>>(out, mean, rstd, inp, weight, bias, N, C);
+    const int grid_size = N;
+    layernorm_forward_kernel2<<<grid_size, block_size>>>(out, mean, rstd, inp, weight, bias, B, T, C);
     cudaCheck(cudaGetLastError());
 }
 
@@ -824,11 +943,18 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
 void layernorm_backward(float* dinp, float* dweight, float* dbias,
                         const float* dout, const float* inp, const  float* weight, const float* mean, const float* rstd,
                         int B, int T, int C) {
-    const int block_size = 512;
+    // const int block_size = 512;
+    // const int N = B * T;
+    // const int grid_size = CEIL_DIV(32*N, block_size);
+    // size_t shared_mem_size = 2 * C * sizeof(float);
+    // layernorm_backward_kernel2<<<grid_size, block_size, shared_mem_size>>>(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
+    // cudaCheck(cudaGetLastError());
+
+    const int block_size = 256;
     const int N = B * T;
-    const int grid_size = CEIL_DIV(32*N, block_size);
+    const int grid_size = CEIL_DIV(32 * N, block_size);
     size_t shared_mem_size = 2 * C * sizeof(float);
-    layernorm_backward_kernel2<<<grid_size, block_size, shared_mem_size>>>(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
+    layernorm_backward_kernel1<<<grid_size, block_size>>>(dinp, dweight, dbias, dout, inp, weight, mean, rstd, B, T, C);
     cudaCheck(cudaGetLastError());
 }
 
