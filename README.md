@@ -3,8 +3,6 @@ First please read the "quick start" part, do
 ```bash
 chmod u+x ./dev/download_starter_pack.sh
 ./dev/download_starter_pack.sh
-make train_gpt2fp32cu
-./train_gpt2fp32cu
 ```
 to get model files.
 
