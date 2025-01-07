@@ -1,2 +1,5 @@
+//navie version and cublas version in CPU are commented out in the "train_gpt2_v2.cu"
+//cublas version in GPU in the file "train_gpt2_fp32_change.cu"
+
 make train_gpt2
 ./train_gpt2
