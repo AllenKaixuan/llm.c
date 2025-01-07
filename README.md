@@ -16,11 +16,11 @@ To compile and execute it, do
 ./train_gpt2_softmax_forward_gpu_vX
 ```
 ## Process files 
-Every member puts their file in the following folder:
-Ruichi Han : HRC
-Ziyin Yang : Ziyin Yang(Matrix Multiplication)
-Yurun Chao : Yurun
-Xikai Liu : Xikai
+Every member puts their file in the following folder:  
+Ruichi Han : HRC   
+Ziyin Yang : Ziyin Yang(Matrix Multiplication)   
+Yurun Chao : Yurun   
+Xikai Liu : Xikai   
 Please refer to their own README.md inside those folders to compile and execute their process files.
 # llm.c
 
