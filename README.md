@@ -1,6 +1,6 @@
 # DD2360 Group5 LLM Profiling and Optimization
 ## group member
-Ruichi Han, Xikai Liu,Yurun Chao,Ziyin Yang)
+Ruichi Han, Xikai Liu,Yurun Chao,Ziyin Yang
 ## To start
 First please read the "quick start" part, do
 ```bash
