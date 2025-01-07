@@ -1,5 +1,5 @@
 # Enhanced Versions of softmax, Cross-Entropy, and logit gradients Based on the Original CPU Version and move to GPU version
-Copy and replace the Makefile and .cu files to the main folder, then compile and execution
+Copy and replace the Makefile and .cu files to the main folder, then compile and execution.  
 First please read the "quick start" part, do
 ```bash
 chmod u+x ./dev/download_starter_pack.sh
