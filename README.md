@@ -1,6 +1,5 @@
-# Enhanced Versions of softmax, Cross-Entropy and logit gradients Based on the Original CPU Version and move to GPU version
-
-First please read the "quick start" part , do
+# Enhanced Versions of softmax, Cross-Entropy, and logit gradients Based on the Original CPU Version and move to GPU version
+First please read the "quick start" part, do
 ```bash
 chmod u+x ./dev/download_starter_pack.sh
 ./dev/download_starter_pack.sh
@@ -13,7 +12,7 @@ to get model files.
 These versions focus solely on modifying the Softmax function. Each version can be compiled and executed as follows:
 
 - **Version Names:** `train_gpt2_softmax_forward_gpu_vX` (where `X = 1, 2, 3, 4`)
-- **Compilation Command:**
+- **Compilation and execution Command:**
 ```bash
  make train_gpt2_softmax_forward_gpu_vX
 ./train_gpt2_softmax_forward_gpu_vX
@@ -23,7 +22,7 @@ These versions focus solely on modifying the Softmax function. Each version can 
 These versions include modifications to both the Softmax and Cross-Entropy functions.
 
 - **Version Names:** `train_gpt2_softmax_cross_forward_gpu_v1`
-- **Compilation Command:**
+- **Compilation and execution Command:**
 ```bash
  make train_gpt2_softmax_cross_forward_gpu_v1
 ./train_gpt2_softmax_cross_forward_gpu_v1
@@ -32,7 +31,7 @@ These versions include modifications to both the Softmax and Cross-Entropy funct
 These versions include modifications to both the Softmax, Cross-Entropy and logit gradients functions.
 
 - **Version Names:** `train_gpt2_fp32_softmax_cross_v1`
-- **Compilation Command:**
+- **Compilation and execution Command:**
 ```bash
  make train_gpt2_fp32_softmax_cross_v1
 ./train_gpt2_fp32_softmax_cross_v1
@@ -42,7 +41,7 @@ These versions include modifications to both the Softmax, Cross-Entropy and logi
 To validate the implementation, use the test version as follows:
 
 - **Version Names:** `test_gpt2_fp32_softmax_cross_v1`
-- **Compilation Command:**
+- **Compilation and execution Command:**
 ```bash
  make test_gpt2_fp32_softmax_cross_v1
 ./test_gpt2_fp32_softmax_cross_v1
