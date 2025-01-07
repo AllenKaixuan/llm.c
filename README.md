@@ -1,3 +1,27 @@
+# DD2360 Group5 LLM Profiling and Optimization
+## group member
+Ruichi Han, Xikai Liu,Yurun Chao,Ziyin Yang)
+## To start
+First please read the "quick start" part, do
+```bash
+chmod u+x ./dev/download_starter_pack.sh
+./dev/download_starter_pack.sh
+```
+to get model files.
+## Final version
+The final version is train_gpt2_modify.cu  
+To compile and execute it, do
+```bash
+ make train_gpt2_softmax_forward_gpu_vX
+./train_gpt2_softmax_forward_gpu_vX
+```
+## Process files 
+Every member puts their file in the following folder:
+Ruichi Han : HRC
+Ziyin Yang : Ziyin Yang(Matrix Multiplication)
+Yurun Chao : Yurun
+Xikai Liu : Xikai
+Please refer to their own README.md inside those folders to compile and execute their process files.
 # llm.c
 
 LLMs in simple, pure C/CUDA with no need for 245MB of PyTorch or 107MB of cPython. Current focus is on pretraining, in particular reproducing the [GPT-2](https://github.com/openai/gpt-2) and [GPT-3](https://arxiv.org/abs/2005.14165) miniseries, along with a parallel PyTorch reference implementation in [train_gpt2.py](train_gpt2.py). You'll recognize this file as a slightly tweaked [nanoGPT](https://github.com/karpathy/nanoGPT), an earlier project of mine. Currently, llm.c is a bit faster than PyTorch Nightly (by about 7%). In addition to the bleeding edge mainline code in [train_gpt2.cu](train_gpt2.cu), we have a simple reference CPU fp32 implementation in ~1,000 lines of clean code in one file [train_gpt2.c](train_gpt2.c). I'd like this repo to only maintain C and CUDA code. Ports to other languages or repos are very welcome, but should be done in separate repos, and I am happy to link to them below in the "notable forks" section. Developer coordination happens in the [Discussions](https://github.com/karpathy/llm.c/discussions) and on Discord, either the `#llmc` channel on the [Zero to Hero](https://discord.gg/3zy8kqD9Cp) channel, or on `#llmdotc` on [GPU MODE](https://discord.gg/gpumode) Discord.
