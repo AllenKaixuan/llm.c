@@ -788,7 +788,7 @@ void attention_backward(float* dinp, float* dqkvr, float* dpreatt, float* datt, 
 
 
 
-
+// The original fused_classifier_kernel3 is replaced by softmax_cross_kernel kernel, which also contain logit Gradients
 __global__ void softmax_cross_kernel(float* losses, const int* targets, float* logits, float* probs, const float* dlosses, int N, int V, int Vp){
 
     int row = blockIdx.x;
@@ -806,27 +806,26 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
         float localMax_prev = localMax;
         float localMax_new = logits[row * Vp + col];
         localMax = fmax(localMax_new , localMax_prev);
+        // online local softmax
         localSum = (localMax_new > localMax_prev) ? localSum * expf(localMax_prev - localMax_new) + 1 : localSum + expf(localMax_new - localMax_prev);
     }
 
-
+    //Blocksize of shared Memory for Local Max and another blocksize of shared Memory for Local Sum
     sdata[threadIdx.x] = localMax;
     sdata[threadIdx.x + blockDim.x] = localSum;
     __syncthreads();
 
-
+    //reduce to get the global max and sum
     for (int offset = blockDim.x >> 1; offset >= 1; offset >>= 1) {
         if (threadIdx.x < offset) {
             float a_max = sdata[threadIdx.x];
             float b_max = sdata[threadIdx.x + offset];
             float max = fmaxf(a_max,b_max);
             sdata[threadIdx.x] = max;
-            //sdata[threadIdx.x] = fmaxf(a_max, b_max);
 
             float a_sum = sdata[threadIdx.x + blockDim.x];
             float b_sum = sdata[threadIdx.x + offset + blockDim.x];
-            sdata[threadIdx.x + blockDim.x] = a_sum * expf(a_max - max) + b_sum * expf(b_max - max);
-            //sdata[threadIdx.x + blockDim.x] = (a_max > b_max) ? a_sum + b_sum * expf(b_max - a_max) : b_sum + a_sum * expf(a_max - b_max);
+            sdata[threadIdx.x + blockDim.x] = (a_max > b_max) ? a_sum + b_sum * expf(b_max - a_max) : b_sum + a_sum * expf(a_max - b_max);
         }
         __syncthreads();
     }
@@ -834,7 +833,7 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
     float sumVal = sdata[blockDim.x];
 
     float dloss = dlosses != NULL ? dlosses[row] : 1.0f / N;
-
+    //Traverse and calculate losses and logits
     for (int col = threadIdx.x; col < V; col += blockDim.x) {
         float val = expf(logits[row * Vp + col] - maxVal) / sumVal;
         if (probs != NULL) {
@@ -849,11 +848,12 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
 
 }
 
+// The original fused_classifier3 function is replaced by softmax_cross_forward, which also contain logit Gradients
 void softmax_cross_forward(float* logits, float* losses,
                       const float* dlosses, const int* targets,
                       int B, int T, int V, int P) {
     const int block_size = 1024;
-    size_t sharedMemSize = block_size * sizeof(float) * 2;
+    size_t sharedMemSize = block_size * sizeof(float) * 2; //Max + SUM in shared Memory
     const int N = B * T;
     const int grid_size = N;
     softmax_cross_kernel<<<grid_size, block_size, sharedMemSize>>>(losses,  targets, logits, NULL, dlosses, N, V, P);
