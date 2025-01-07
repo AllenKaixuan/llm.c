@@ -8,6 +8,8 @@ This version is the clean, minimal, reference. As such:
 There will be other versions of this code that specialize it and make it fast.
 */
 
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include<cublas_v2.h>
 #include <cuda_runtime.h>
@@ -282,7 +284,7 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
 
 
 
-__global__ void attention_query_key_kernel1(float* preatt, const float* inp,
+__global__ void attention_query_key_kernel(float* preatt, const float* inp,
                                            int B, int T, int C, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * NH * T * T;
@@ -314,7 +316,7 @@ __global__ void attention_query_key_kernel1(float* preatt, const float* inp,
     }
 }
 
-__global__ void attention_softmax_kernel1(float* att, const float* preatt,
+__global__ void attention_softmax_kernel(float* att, const float* preatt,
                                          int B, int T, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * T * NH;
@@ -357,7 +359,7 @@ __global__ void attention_softmax_kernel1(float* att, const float* preatt,
     }
 }
 
-__global__ void attention_value_kernel1(float* out, const float* att, const float* inp,
+__global__ void attention_value_kernel(float* out, const float* att, const float* inp,
                                        int B, int T, int C, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * T * NH;
@@ -407,18 +409,18 @@ void attention_forward(float* out, float* preatt, float* att,
 
 
     // attention calculation
-    int block_size = 64;
+    int block_size = 1024;
     int total_threads = B * NH * T * T;
     int num_blocks =  (total_threads + block_size - 1) / block_size;
-    attention_query_key_kernel1<<<num_blocks, block_size>>>(d_preatt, d_inp, B, T, C, NH);
+    attention_query_key_kernel<<<num_blocks, block_size>>>(d_preatt, d_inp, B, T, C, NH);
     
     // softmax and value accumulation
     total_threads = B * T * NH;
     num_blocks = (total_threads + block_size - 1) / block_size;
 
    
-    attention_softmax_kernel1<<<num_blocks, block_size>>>(d_att, d_preatt, B, T, NH);
-    attention_value_kernel1<<<num_blocks, block_size>>>(d_out, d_att, d_inp, B, T, C, NH);
+    attention_softmax_kernel<<<num_blocks, block_size>>>(d_att, d_preatt, B, T, NH);
+    attention_value_kernel<<<num_blocks, block_size>>>(d_out, d_att, d_inp, B, T, C, NH);
     
     
     // copy data back to host
@@ -438,174 +440,169 @@ void attention_forward(float* out, float* preatt, float* att,
     
 }
 
-__global__ void softmax_autoregressive_backward_kernel1(float* dpreatt, const float* datt, const float* att,
-                                                     int B, int T, int C, int NH) {
-    // dpreatt, datt, att are all (B, NH, T, T)
-    int t3 = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t3 < T) {
-        int hs = C / NH; // head size
-        float scale = 1.0f / sqrtf(hs);
-        for (int b = 0; b < B; b++) {
-            for (int h = 0; h < NH; h++) {
-                for (int t = t3; t < T; t++) {
-                    const float* att_bth = att + b*NH*T*T + h*T*T + t*T;
-                    const float* datt_bth = datt + b*NH*T*T + h*T*T + t*T;
-                    float* dpreatt_bth = dpreatt + b*NH*T*T + h*T*T + t*T;
-                    float accum = 0.0f;
-                    for (int t2 = 0; t2 <= t; t2++) {
-                        float indicator = t2 == t3 ? 1.0f : 0.0f;
-                        float local_derivative = att_bth[t2] * (indicator - att_bth[t3]);
-                        accum +=  scale * local_derivative * datt_bth[t2];
-                    }
-                    dpreatt_bth[t3] = accum;
-                }
-            }
-        }
-    }
-}
+// __global__ void attention_backward_value_kernel(float* dinp, float* datt, const float* dout, const float* inp, const float* att, int B, int T, int C, int NH) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     int total_threads = B  *T* NH;
 
-__global__ void unpermute_kernel_backward(float* dinp, const float *dout, int B, int N, int NH, int d) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < B * NH * N * d) {
-        int b = idx / (NH * N * d);
-        int rest = idx % (NH * N * d);
-        int nh_ = rest / (N * d);
-        rest = rest % (N * d);
-        int n = rest / d;
-        int d_ = rest % d;
+//     if (idx < total_threads) {
+//         int h = idx % NH;
+//         int t = (idx / NH) % T;
+//         int b = idx / (NH * T);
 
-        int other_idx = (b * NH * N * d) + (n * NH * d) + (nh_ * d) + d_;
-        dinp[idx] += dout[other_idx];
-    }
-}
-__global__ void permute_kernel_backward(float* dinp,
-                                        const float* dq, const float* dk, const float* dv,
-                                        int B, int N, int NH, int d) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < B * NH * N * d) {
-        int b = idx / (NH * N * d);
-        int rest = idx % (NH * N * d);
-        int nh_ = rest / (N * d);
-        rest = rest % (N * d);
-        int n = rest / d;
-        int d_ = rest % d;
+//         int C3 = C * 3;
+//         int hs = C / NH; // head size
 
-        int inp_idx = (b * N * 3 * NH * d) + (n * 3 * NH * d) + (0 * NH * d) + (nh_ * d) + d_;
-        dinp[inp_idx] += dq[idx];
-        dinp[inp_idx + NH * d] += dk[idx];
-        dinp[inp_idx + 2 * (NH * d)] += dv[idx];
-    }
-}
+//         const float* dout_bth = dout + b * T * C + t * C + h * hs;
+//         const float* att_bth = att + b * NH * T * T + h * T * T + t * T;
+//         float* datt_bth = datt + b * NH * T * T + h * T * T + t * T;
 
-void attention_backward1(float* dinp, float* dqkvr, float* dpreatt, float* datt, float* dvaccum,
-                        const float* dout,
-                        const float* inp, const float* qkvr, const float* preatt, const float* att, const float* vaccum,
-                        int B, int T, int C, int NH,
-                        const int block_size) {
-    int HS = C / NH; // head size
-    const float alpha = 1.0f;
-    const float beta = 1.0f; // note beta = 1.0f so that we accumulate gradients (+=)
-    // unpack convenience pointers into q, k, v
-    const float *q, *k, *v;
-    q = qkvr + 0 * B * T * C;
-    k = qkvr + 1 * B * T * C;
-    v = qkvr + 2 * B * T * C;
-    float *dq, *dk, *dv;
-    dq = dqkvr + 0 * B * T * C;
-    dk = dqkvr + 1 * B * T * C;
-    dv = dqkvr + 2 * B * T * C;
+//         for (int t2 = 0; t2 <= t; t2++) {
+//             const float* value_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C * 2; // +C*2 because it's value
+//             float* dvalue_t2 = dinp + b * T * C3 + t2 * C3 + h * hs + C * 2;
+//             for (int i = 0; i < hs; i++) {
+//                 datt_bth[t2] += value_t2[i] * dout_bth[i];
+//                 dvalue_t2[i] += att_bth[t2] * dout_bth[i];
+//             }
+//         }
+//     }
+// }
 
-    // backward through the unpermute operation
-    int num_blocks = (B*T*C + block_size - 1) / block_size;
-    unpermute_kernel_backward<<<num_blocks, block_size>>>(dvaccum, dout, B, T, NH, HS);
-    cudaCheck(cudaGetLastError());
+// __global__ void attention_backward_softmax_kernel(float* dpreatt, const float* datt, const float* att, int B, int T, int NH) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     int total_threads = B *T * NH * T;
 
-    cublasHandle_t cublas_handle;
-    cublasCreate(&cublas_handle);
-    // backward into datt
-    cublasSgemmStridedBatched(cublas_handle,
-                            CUBLAS_OP_T, CUBLAS_OP_N,
-                            T, T, HS,
-                            &alpha,
-                            v, HS, T * HS,
-                            dvaccum, HS, T * HS,
-                            &beta,
-                            datt, T, T * T,
-                            B * NH);
+//     if (idx < total_threads) {
+//         int h = idx % NH;
+//         int t = (idx / NH) % T;
+//         int b = idx / (NH * T);
 
-    // backward into dv
-    cublasSgemmStridedBatched(cublas_handle,
-            CUBLAS_OP_N, CUBLAS_OP_T,
-            HS, T, T,
-            &alpha,
-            dvaccum, HS, T * HS,
-            att, T, T * T,
-            &beta,
-            dv, HS, T * HS,
-            B * NH);
+//         const float* att_bth = att + b * NH * T * T + h * T * T + t * T;
+//         const float* datt_bth = datt + b * NH * T * T + h * T * T + t * T;
+//         float* dpreatt_bth = dpreatt + b * NH * T * T + h * T * T + t * T;
 
-    // backward into preatt
-    num_blocks = (T+block_size-1) / block_size;
-    softmax_autoregressive_backward_kernel1<<<dim3(num_blocks, B*NH), block_size>>>(dpreatt, datt, att, B, T, C, NH);
-    cudaCheck(cudaGetLastError());
+//         for (int t2 = 0; t2 <= t; t2++) {
+//             for (int t3 = 0; t3 <= t; t3++) {
+//                 float indicator = t2 == t3 ? 1.0f : 0.0f;
+//                 float local_derivative = att_bth[t2] * (indicator - att_bth[t3]);
+//                 dpreatt_bth[t3] += local_derivative * datt_bth[t2];
+//             }
+//         }
+//     }
+// }
+// __global__ void attention_backward_softmax_kernel(float* dpreatt, const float* datt, const float* att, int B, int T, int C,int NH) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     int total_threads = B * T * NH;
+//     int hs = C / NH; // head size
+//     float scale = 1.0 / sqrtf(hs);
+//     if (idx < total_threads) {
+//         // 计算索引
+               
+//         int h = idx % NH;
+//         int t = (idx / NH) % T;
+//         int b = idx / (NH * T);    
 
-    // backward into q
-    cublasSgemmStridedBatched(cublas_handle,
-                            CUBLAS_OP_N, CUBLAS_OP_N,
-                            HS, T, T,
-                            &alpha,
-                            k, HS, T * HS,
-                            dpreatt, T, T * T,
-                            &beta,
-                            dq, HS, T * HS,
-                            B * NH);
-    // backward into k
-    cublasSgemmStridedBatched(cublas_handle,
-                            CUBLAS_OP_N, CUBLAS_OP_T,
-                            HS, T, T,
-                            &alpha,
-                            q, HS, T * HS,
-                            dpreatt, T, T * T,
-                            &beta,
-                            dk, HS, T * HS,
-                            B * NH);
-
-    // backward into inp
-    num_blocks = (B*NH*T*HS + block_size - 1) / block_size;
-    permute_kernel_backward<<<num_blocks, block_size>>>(dinp, dq, dk, dv, B, T, NH, HS);
-    cudaCheck(cudaGetLastError());
-}
-
-// void attention_backward(float* inp, const float* qkvr, const float* preatt, const float* att,float*dout, const float* vaccum,
-//                         int B, int T, int C, int NH) {
-//     float *d_dinp, *d_dqkvr, *d_dpreatt, *d_datt, *d_dvaccum, *d_dout;
-
-//     cudaCheck(cudaMalloc(&d_dinp, B * T * 3 * C * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_dqkvr, B * T * 3 * C * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_dpreatt, B * NH * T * T * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_datt, B * NH * T * T * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_dvaccum, B * T * C * sizeof(float)));
-//     cudaCheck(cudaMalloc(&d_dout, B * T * C * sizeof(float)));
-//     // copy over the dout gradients that starts the backprop chain
-//     cudaCheck(cudaMemcpy(d_dout, dout, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
-//     // memset all the other memory to zeros, to += into
-//     cudaCheck(cudaMemset(d_dinp, 0, B * T * 3 * C * sizeof(float)));
-//     cudaCheck(cudaMemset(d_dqkvr, 0, B * T * 3 * C * sizeof(float)));
-//     cudaCheck(cudaMemset(d_dpreatt, 0, B * NH * T * T * sizeof(float)));
-//     cudaCheck(cudaMemset(d_datt, 0, B * NH * T * T * sizeof(float)));
-//     cudaCheck(cudaMemset(d_dvaccum, 0, B * T * C * sizeof(float)));
-    
-//     int block_size = 64;
-//     attention_backward1(d_dinp, d_dqkvr, d_dpreatt, d_datt, d_dvaccum, d_dout, inp, qkvr, preatt, att, vaccum, B, T, C, NH,block_size);
+//         const float* att_bth = att + b * NH * T * T + h * T * T + t * T;
+//         const float* datt_bth = datt + b * NH * T * T + h * T * T + t * T;
+//         float* dpreatt_bth = dpreatt + b * NH * T * T + h * T * T + t * T;
+//       for (int t2 = 0; t2 <= t; t2++) {
+//         for (int t3 = 0; t3 <= t; t3++) {
+//             float indicator = t2 == t3 ? 1.0f : 0.0f;
+//             float local_derivative = att_bth[t2] * (indicator - att_bth[t3]);
+//             dpreatt_bth[t3] += local_derivative * datt_bth[t2];
+//         }
+//       }
+//     }
+// }
 
 
+
+// __global__ void attention_backward_query_key_kernel(float* dinp, const float* dpreatt, const float* inp, int B, int T, int C, int NH) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     int total_threads = B * T * NH;
+
+//     if (idx < total_threads) {
+//         int h = idx % NH;
+//         int t = (idx / NH) % T;
+//         int b = idx / (NH * T);
+
+//         int C3 = C * 3;
+//         int hs = C / NH; // head size
+        
+
+//         const float* dpreatt_bth = dpreatt + b * NH * T * T + h * T * T + t * T;
+//         float* dquery_t = dinp + b * T * C3 + t * C3 + h * hs;
+//         const float* query_t = inp + b * T * C3 + t * C3 + h * hs;
+
+//         for (int t2 = 0; t2 <= t; t2++) {
+//             const float* key_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C; // +C because it's key
+//             float* dkey_t2 = dinp + b * T * C3 + t2 * C3 + h * hs + C; // +C because it's key
+//             for (int i = 0; i < hs; i++) {
+//                 dquery_t[i] += key_t2[i] * dpreatt_bth[t2];
+//                 dkey_t2[i] += query_t[i] * dpreatt_bth[t2];
+//             }
+//         }
+//     }
 // }
 
 // void attention_backward(float* dinp, float* dpreatt, float* datt,
-//                         float* dout, float* inp, float* att,
+//                         const float* dout, const float* inp, const float* att,
 //                         int B, int T, int C, int NH) {
-                            
-//                         }
+//     int total_threads = B * NH  * T;
+//     int block_size = 256;
+//     int num_blocks = (total_threads + block_size - 1) / block_size;
+
+//     float* d_dinp;
+//     float* d_dpreatt;
+//     float* d_datt;
+//     float* d_dout;
+//     float* d_inp;
+//     float* d_att;
+
+//     cudaCheck(cudaMalloc(&d_dinp, B * T * C * 3 * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_dpreatt, B * NH * T * T * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_datt, B * NH * T * T * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_dout, B * T * C * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_inp, B * T * C * 3 * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_att, B * NH * T * T * sizeof(float)));
+
+//     cudaCheck(cudaMemcpy(d_dinp, dinp, B * T * C * 3 * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_dpreatt, dpreatt, B * NH * T * T * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_datt, datt, B * NH * T * T * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_dout, dout, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_inp, inp, B * T * C * 3 * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_att, att, B * NH * T * T * sizeof(float), cudaMemcpyHostToDevice));
+
+//     // Launch attention_backward_value_kernel
+    
+//     num_blocks = (total_threads + block_size - 1) / block_size;
+//     attention_backward_value_kernel<<<num_blocks, block_size>>>(d_dinp, d_datt, d_dout, d_inp, d_att, B, T, C, NH);
+//     cudaCheck(cudaGetLastError());
+//     cudaCheck(cudaDeviceSynchronize());
+   
+//     // Launch attention_backward_softmax_kernel
+//     attention_backward_softmax_kernel<<<num_blocks, block_size>>>(d_dpreatt, d_datt, d_att, B, T, C,NH);
+//     cudaCheck(cudaGetLastError());
+//     cudaCheck(cudaDeviceSynchronize());
+    
+//     num_blocks = (total_threads + block_size - 1) / block_size;
+//     // Launch attention_backward_query_key_kernel
+//     attention_backward_query_key_kernel<<<num_blocks, block_size>>>(d_dinp, d_dpreatt, d_inp, B, T, C, NH);
+//     cudaCheck(cudaGetLastError());
+//     cudaCheck(cudaDeviceSynchronize());
+
+//     cudaCheck(cudaMemcpy(dinp, d_dinp, B * T * C * 3 * sizeof(float), cudaMemcpyDeviceToHost));
+//     cudaCheck(cudaMemcpy(dpreatt, d_dpreatt, B * NH * T * T * sizeof(float), cudaMemcpyDeviceToHost));
+//     cudaCheck(cudaMemcpy(datt, d_datt, B * NH * T * T * sizeof(float), cudaMemcpyDeviceToHost));
+
+//     cudaCheck(cudaFree(d_dinp));
+//     cudaCheck(cudaFree(d_dpreatt));
+//     cudaCheck(cudaFree(d_datt));
+//     cudaCheck(cudaFree(d_dout));
+//     cudaCheck(cudaFree(d_inp));
+//     cudaCheck(cudaFree(d_att));
+// }
+
+
 
 void attention_backward(float* dinp, float* dpreatt, float* datt,
                         float* dout, float* inp, float* att,
@@ -669,33 +666,72 @@ void attention_backward(float* dinp, float* dpreatt, float* datt,
 
 
 #define GELU_SCALING_FACTOR sqrtf(2.0f / M_PI)
-__global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
+// __global__ void gelu_forward_kernel(float* out, const float* inp, int N) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (idx < N) {
+//         float x = inp[idx];
+//         float cube = 0.044715f * x * x * x;
+//         out[idx] = 0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube)));
+//     }
+// }
+
+// void gelu_forward(float* out, const float* inp, int N) {
+    
+//     float* d_out;
+//     float* d_inp;
+//     cudaCheck(cudaMalloc(&d_out, N * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
+//     cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
+    
+//     int block_size = 256;
+//     int num_blocks = (N + block_size - 1) / block_size;
+//     gelu_forward_kernel<<<num_blocks, block_size>>>(d_out, d_inp, N);
+//     cudaCheck(cudaGetLastError());
+//     cudaCheck(cudaDeviceSynchronize());
+//     cudaCheck(cudaMemcpy(out, d_out, N * sizeof(float), cudaMemcpyDeviceToHost));
+//     cudaCheck(cudaFree(d_out));
+//     cudaCheck(cudaFree(d_inp));
+// }
+
+
+__global__ void gelu_forward_kernel(__nv_bfloat16* out, const __nv_bfloat16* inp, int N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
-        float x = inp[idx];
+        float x = __bfloat162float(inp[idx]);
         float cube = 0.044715f * x * x * x;
-        out[idx] = 0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube)));
+        out[idx] = __float2bfloat16(0.5f * x * (1.0f + tanhf(GELU_SCALING_FACTOR * (x + cube))));
     }
 }
 
 void gelu_forward(float* out, const float* inp, int N) {
-    
-    float* d_out;
-    float* d_inp;
-    cudaCheck(cudaMalloc(&d_out, N * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
-    cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
-    
+    __nv_bfloat16* d_out;
+    __nv_bfloat16* d_inp;
+    cudaCheck(cudaMalloc(&d_out, N * sizeof(__nv_bfloat16)));
+    cudaCheck(cudaMalloc(&d_inp, N * sizeof(__nv_bfloat16)));
+
+    __nv_bfloat16* trans_in = (__nv_bfloat16*)malloc(N * sizeof(__nv_bfloat16));
+    for (int i = 0; i < N; i++) {
+        trans_in[i] = __float2bfloat16(inp[i]);
+    }
+    cudaMemcpy(d_inp, trans_in, N * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+
     int block_size = 256;
     int num_blocks = (N + block_size - 1) / block_size;
     gelu_forward_kernel<<<num_blocks, block_size>>>(d_out, d_inp, N);
     cudaCheck(cudaGetLastError());
     cudaCheck(cudaDeviceSynchronize());
-    cudaCheck(cudaMemcpy(out, d_out, N * sizeof(float), cudaMemcpyDeviceToHost));
+
+    __nv_bfloat16* trans_out = (__nv_bfloat16*)malloc(N * sizeof(__nv_bfloat16));
+    cudaMemcpy(trans_out, d_out, N * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < N; i++) {
+        out[i] = __bfloat162float(trans_out[i]);
+    }
+
+    free(trans_in);
+    free(trans_out);
     cudaCheck(cudaFree(d_out));
     cudaCheck(cudaFree(d_inp));
 }
-
 
 
 
@@ -704,30 +740,74 @@ void gelu_forward(float* out, const float* inp, int N) {
 #if defined(__GNUC__) && !defined(__clang__)
 __attribute__((optimize("no-finite-math-only")))
 #endif
-__global__ void gelu_backward_kernel(float* dinp, const float* inp, const float* dout, int N) {
+// __global__ void gelu_backward_kernel(float* dinp, const float* inp, const float* dout, int N) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (idx < N) {
+//         float x = inp[idx];
+//         float cube = 0.044715f * x * x * x;
+//         float tanh_arg = GELU_SCALING_FACTOR * (x + cube);
+//         float tanh_out = tanhf(tanh_arg);
+//         float coshf_out = coshf(tanh_arg);
+//         float sech_out = 1.0f / (coshf_out * coshf_out);
+//         float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
+//         dinp[idx] = local_grad * dout[idx];
+//     }
+// }
+
+// void gelu_backward(float* dinp, const float* inp, const float* dout, int N) {
+//     float* d_dinp;
+//     float* d_inp;
+//     float* d_dout;
+//     cudaCheck(cudaMalloc(&d_dinp, N * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
+//     cudaCheck(cudaMalloc(&d_dout, N * sizeof(float)));
+
+//     cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
+//     cudaCheck(cudaMemcpy(d_dout, dout, N * sizeof(float), cudaMemcpyHostToDevice));
+
+//     int block_size = 256;
+//     int num_blocks = (N + block_size - 1) / block_size;
+//     gelu_backward_kernel<<<num_blocks, block_size>>>(d_dinp, d_inp, d_dout, N);
+//     cudaCheck(cudaGetLastError());
+//     cudaCheck(cudaDeviceSynchronize());
+
+//     cudaCheck(cudaMemcpy(dinp, d_dinp, N * sizeof(float), cudaMemcpyDeviceToHost));
+
+//     cudaCheck(cudaFree(d_dinp));
+//     cudaCheck(cudaFree(d_inp));
+//     cudaCheck(cudaFree(d_dout));
+// }
+
+__global__ void gelu_backward_kernel(__nv_bfloat16* dinp, const __nv_bfloat16* inp, const __nv_bfloat16* dout, int N) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
-        float x = inp[idx];
+        float x = __bfloat162float(inp[idx]);
         float cube = 0.044715f * x * x * x;
         float tanh_arg = GELU_SCALING_FACTOR * (x + cube);
         float tanh_out = tanhf(tanh_arg);
         float coshf_out = coshf(tanh_arg);
         float sech_out = 1.0f / (coshf_out * coshf_out);
         float local_grad = 0.5f * (1.0f + tanh_out) + x * 0.5f * sech_out * GELU_SCALING_FACTOR * (1.0f + 3.0f * 0.044715f * x * x);
-        dinp[idx] = local_grad * dout[idx];
+        dinp[idx] = __float2bfloat16(local_grad * __bfloat162float(dout[idx]));
     }
 }
 
 void gelu_backward(float* dinp, const float* inp, const float* dout, int N) {
-    float* d_dinp;
-    float* d_inp;
-    float* d_dout;
-    cudaCheck(cudaMalloc(&d_dinp, N * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_inp, N * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_dout, N * sizeof(float)));
+    __nv_bfloat16* d_dinp;
+    __nv_bfloat16* d_inp;
+    __nv_bfloat16* d_dout;
+    cudaCheck(cudaMalloc(&d_dinp, N * sizeof(__nv_bfloat16)));
+    cudaCheck(cudaMalloc(&d_inp, N * sizeof(__nv_bfloat16)));
+    cudaCheck(cudaMalloc(&d_dout, N * sizeof(__nv_bfloat16)));
 
-    cudaCheck(cudaMemcpy(d_inp, inp, N * sizeof(float), cudaMemcpyHostToDevice));
-    cudaCheck(cudaMemcpy(d_dout, dout, N * sizeof(float), cudaMemcpyHostToDevice));
+    __nv_bfloat16* trans_in = (__nv_bfloat16*)malloc(N * sizeof(__nv_bfloat16));
+    __nv_bfloat16* trans_dout = (__nv_bfloat16*)malloc(N * sizeof(__nv_bfloat16));
+    for (int i = 0; i < N; i++) {
+        trans_in[i] = __float2bfloat16(inp[i]);
+        trans_dout[i] = __float2bfloat16(dout[i]);
+    }
+    cudaMemcpy(d_inp, trans_in, N * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dout, trans_dout, N * sizeof(__nv_bfloat16), cudaMemcpyHostToDevice);
 
     int block_size = 256;
     int num_blocks = (N + block_size - 1) / block_size;
@@ -735,8 +815,15 @@ void gelu_backward(float* dinp, const float* inp, const float* dout, int N) {
     cudaCheck(cudaGetLastError());
     cudaCheck(cudaDeviceSynchronize());
 
-    cudaCheck(cudaMemcpy(dinp, d_dinp, N * sizeof(float), cudaMemcpyDeviceToHost));
+    __nv_bfloat16* trans_dinp = (__nv_bfloat16*)malloc(N * sizeof(__nv_bfloat16));
+    cudaMemcpy(trans_dinp, d_dinp, N * sizeof(__nv_bfloat16), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < N; i++) {
+        dinp[i] = __bfloat162float(trans_dinp[i]);
+    }
 
+    free(trans_in);
+    free(trans_dout);
+    free(trans_dinp);
     cudaCheck(cudaFree(d_dinp));
     cudaCheck(cudaFree(d_inp));
     cudaCheck(cudaFree(d_dout));
