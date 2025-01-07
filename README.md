@@ -12,8 +12,8 @@ to get model files.
 The final version is train_gpt2_modify.cu  
 To compile and execute it, do
 ```bash
- make train_gpt2_softmax_forward_gpu_vX
-./train_gpt2_softmax_forward_gpu_vX
+ make train_gpt2_modify
+./train_gpt2_modify
 ```
 ## Process files 
 Every member puts their file in the following folder:  
