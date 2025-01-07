@@ -24,7 +24,7 @@ NCLL_INCUDES =
 NVCC_CUDNN =
 # By default we don't build with cudnn because it blows up compile time from a few seconds to ~minute
 USE_CUDNN ?= 0
-
+#USE_CUDNN = 1
 # We will place .o files in the `build` directory (create it if it doesn't exist)
 BUILD_DIR = build
 ifeq ($(OS), Windows_NT)
@@ -254,9 +254,16 @@ ifeq ($(NVCC),)
     $(info ✗ nvcc not found, skipping GPU/CUDA builds)
 else
     $(info ✓ nvcc found, including GPU/CUDA support)
-    TARGETS += train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu $(NVCC_CUDNN)
+    TARGETS += train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu $(NVCC_CUDNN)    
+    TARGETS += train_gpt2_softmax_forward_gpu_v1 train_gpt2_softmax_forward_gpu_v2 train_gpt2_softmax_forward_gpu_v3 train_gpt2_softmax_forward_gpu_v4
+    TARGETS += train_gpt2_softmax_forward_gpu_cudnn
+    TARGETS += train_gpt2_softmax_cross_forward_gpu_v1
+    TARGETS += train_gpt2_fp32_softmax_cross_v1
+    TARGETS += test_gpt2_fp32_softmax_cross_v1
 endif
 
+NVCC_FLAGS += -Xcompiler -fopenmp
+NVCC_LDFLAGS += -lcudnn
 $(info ---------------------------------------------)
 
 all: $(TARGETS)
@@ -284,6 +291,30 @@ test_gpt2fp32cu: test_gpt2_fp32.cu
 
 profile_gpt2cu: profile_gpt2.cu $(NVCC_CUDNN)
 	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) -lineinfo $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS)  $(CUDA_OUTPUT_FILE)
+
+train_gpt2_softmax_forward_gpu_v1: train_gpt2_softmax_forward_gpu_v1.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+train_gpt2_softmax_forward_gpu_v2: train_gpt2_softmax_forward_gpu_v2.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+train_gpt2_softmax_forward_gpu_v3: train_gpt2_softmax_forward_gpu_v3.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+train_gpt2_softmax_forward_gpu_v4: train_gpt2_softmax_forward_gpu_v4.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+train_gpt2_softmax_cross_forward_gpu_v1: train_gpt2_softmax_cross_forward_gpu_v1.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+train_gpt2_fp32_softmax_cross_v1: train_gpt2_fp32_softmax_cross_v1.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+#cudnn not working
+train_gpt2_softmax_forward_gpu_cudnn: train_gpt2_softmax_forward_gpu_cudnn.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+test_gpt2_fp32_softmax_cross_v1: test_gpt2_fp32_softmax_cross_v1.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
 
 clean:
 	$(REMOVE_FILES) $(TARGETS)

@@ -815,7 +815,7 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
     sdata[threadIdx.x + blockDim.x] = localSum;
     __syncthreads();
 
-    //reduce to get the global max and sum
+   //reduce to get the global max and sum
     for (int offset = blockDim.x >> 1; offset >= 1; offset >>= 1) {
         if (threadIdx.x < offset) {
             float a_max = sdata[threadIdx.x];
@@ -825,7 +825,7 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
 
             float a_sum = sdata[threadIdx.x + blockDim.x];
             float b_sum = sdata[threadIdx.x + offset + blockDim.x];
-            sdata[threadIdx.x + blockDim.x] = (a_max > b_max) ? a_sum + b_sum * expf(b_max - a_max) : b_sum + a_sum * expf(a_max - b_max);
+            sdata[threadIdx.x + blockDim.x] = a_sum * expf(a_max - max) + b_sum * expf(b_max - max);
         }
         __syncthreads();
     }
@@ -833,7 +833,7 @@ __global__ void softmax_cross_kernel(float* losses, const int* targets, float* l
     float sumVal = sdata[blockDim.x];
 
     float dloss = dlosses != NULL ? dlosses[row] : 1.0f / N;
-    //Traverse and calculate losses and logits
+    //Traverse and calculate losses
     for (int col = threadIdx.x; col < V; col += blockDim.x) {
         float val = expf(logits[row * Vp + col] - maxVal) / sumVal;
         if (probs != NULL) {
